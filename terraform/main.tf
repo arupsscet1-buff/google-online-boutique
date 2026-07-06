@@ -1,100 +1,270 @@
-# Copyright 2022 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# Definition of local variables
 locals {
-  base_apis = [
-    "container.googleapis.com",
-    "monitoring.googleapis.com",
-    "cloudtrace.googleapis.com",
-    "cloudprofiler.googleapis.com"
-  ]
-  memorystore_apis = ["redis.googleapis.com"]
-  cluster_name     = google_container_cluster.my_cluster.name
+  name               = "my-app-cluster"
+  kubernetes_version = "1.32"
+  region             = "ap-south-1"
+
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    Test       = local.name
+    GithubRepo = "aws-eks"
+    GithubOrg  = "aws-modules"
+  }
 }
 
-# Enable Google Cloud APIs
-module "enable_google_apis" {
-  source  = "terraform-google-modules/project-factory/google//modules/project_services"
-  version = "~> 18.0"
-
-  project_id                  = var.gcp_project_id
-  disable_services_on_destroy = false
-
-  # activate_apis is the set of base_apis and the APIs required by user-configured deployment options
-  activate_apis = concat(local.base_apis, var.memorystore ? local.memorystore_apis : [])
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
-# Create GKE cluster
-resource "google_container_cluster" "my_cluster" {
+################################################################################
+# VPC Module
+################################################################################
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
 
-  name     = var.name
-  location = var.region
+  name = local.name
+  cidr = local.vpc_cidr
 
-  # Enable autopilot for this cluster
-  enable_autopilot = true
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
 
-  # Set an empty ip_allocation_policy to allow autopilot cluster to spin up correctly
-  ip_allocation_policy {
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
   }
 
-  # Avoid setting deletion_protection to false
-  # until you're ready (and certain you want) to destroy the cluster.
-  # deletion_protection = false
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
 
-  depends_on = [
-    module.enable_google_apis
-  ]
+  tags = local.tags
 }
 
-# Get credentials for cluster
-module "gcloud" {
-  source  = "terraform-google-modules/gcloud/google"
-  version = "~> 4.0"
+################################################################################
+# EKS Module (with ALL fixes)
+################################################################################
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
 
-  platform              = "linux"
-  additional_components = ["kubectl", "beta"]
+  name                   = local.name
+  kubernetes_version     = local.kubernetes_version
+  endpoint_public_access = true
+  endpoint_private_access = true 
 
-  create_cmd_entrypoint = "gcloud"
-  # Module does not support explicit dependency
-  # Enforce implicit dependency through use of local variable
-  create_cmd_body = "container clusters get-credentials ${local.cluster_name} --zone=${var.region} --project=${var.gcp_project_id}"
+  enable_cluster_creator_admin_permissions = true
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  # Cluster Addons
+  addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+  }
+
+  # EKS Managed Node Group(s)
+  eks_managed_node_groups = {
+    system-ng = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["t3.large"]
+      subnet_ids     = module.vpc.private_subnets
+      
+      labels = {
+        role = "system-node"
+      }
+
+      #UPDATED - All required policies
+      iam_role_additional_policies = {
+        AmazonEKSWorkerNodePolicy            = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        AmazonEKS_CNI_Policy                 = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+        AmazonEC2ContainerRegistryReadOnly   = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        AmazonSSMManagedInstanceCore         = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+
+      min_size     = 2
+      max_size     = 2
+      desired_size = 2
+
+      tags = merge(
+        local.tags,
+        {
+          "k8s.io/cluster-autoscaler/${local.name}" = "owned"
+        }
+      )
+    }
+    build-ng = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["t3.large"]
+      subnet_ids     = module.vpc.private_subnets
+      
+      labels = {
+        role = "build-node"
+      }
+
+      #UPDATED - All required policies
+      iam_role_additional_policies = {
+        AmazonEKSWorkerNodePolicy            = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        AmazonEKS_CNI_Policy                 = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+        AmazonEC2ContainerRegistryReadOnly   = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        AmazonSSMManagedInstanceCore         = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+
+      min_size     = 1
+      max_size     = 1
+      desired_size = 1
+
+      tags = merge(
+        local.tags,
+        {
+          "k8s.io/cluster-autoscaler/${local.name}" = "owned"
+        }
+      )
+    }
+  }
+
+  tags = local.tags
 }
 
-# Apply YAML kubernetes-manifest configurations
-resource "null_resource" "apply_deployment" {
-  provisioner "local-exec" {
-    interpreter = ["bash", "-exc"]
-    command     = "kubectl apply -k ${var.filepath_manifest} -n ${var.namespace}"
+resource "aws_eks_access_entry" "jenkins" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.jenkins.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "jenkins_deploy" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.jenkins.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}
+
+################################################################################
+# Jenkins Controller EC2
+################################################################################
+resource "aws_instance" "jenkins-controller" {
+  ami                         = "ami-01a00762f46d584a1"
+  instance_type               = "t3.large"
+  subnet_id                   = module.vpc.public_subnets[0]
+  associate_public_ip_address = true
+  key_name                    = "arupdops-mumbai"
+  vpc_security_group_ids      = [aws_security_group.jenkins-sg.id]
+  iam_instance_profile        = aws_iam_instance_profile.jenkins.name
+  monitoring                  = true
+
+  # User data to install kubectl,docker,git and AWS CLI
+  user_data_base64 = base64encode(<<-EOF
+              #!/bin/bash
+              set -e
+              dnf update -y
+              dnf install -y docker git curl
+              
+              # Install kubectl
+              curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+              chmod +x kubectl
+              mv kubectl /usr/local/bin/
+              
+              # Start Docker
+              systemctl start docker
+              systemctl enable docker
+              usermod -aG docker ec2-user
+              EOF
+  )
+
+  tags = {
+    Name = "jenkins-controller"
   }
 
   depends_on = [
-    module.gcloud
+    module.vpc,
+    module.eks,
+    aws_iam_instance_profile.jenkins
   ]
 }
 
-# Wait condition for all Pods to be ready before finishing
-resource "null_resource" "wait_conditions" {
-  provisioner "local-exec" {
-    interpreter = ["bash", "-exc"]
-    command     = <<-EOT
-    kubectl wait --for=condition=AVAILABLE apiservice/v1beta1.metrics.k8s.io --timeout=180s
-    kubectl wait --for=condition=ready pods --all -n ${var.namespace} --timeout=280s
-    EOT
+################################################################################
+# Jenkins Security Group
+################################################################################
+resource "aws_security_group" "jenkins-sg" {
+  name   = "jenkins-sg"
+  vpc_id = module.vpc.vpc_id
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  depends_on = [
-    resource.null_resource.apply_deployment
-  ]
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "jenkins-sg"
+  }
+}
+
+################################################################################
+# Jenkins IAM Role (CORRECTED)
+################################################################################
+resource "aws_iam_role" "jenkins" {
+  name = "jenkins-controller-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# Correct policy for EC2 to access EKS
+resource "aws_iam_role_policy_attachment" "eks_read_only" {
+  role       = aws_iam_role.jenkins.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.jenkins.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "jenkins" {
+  name = "jenkins-controller-profile"
+  role = aws_iam_role.jenkins.name
 }
