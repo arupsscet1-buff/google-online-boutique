@@ -1,0 +1,82 @@
+jenkins:
+  systemMessage: "Managed by JCasC — do not edit via UI, changes will be overwritten"
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD}"   # from env var, never hardcoded
+
+  authorizationStrategy:
+    globalMatrix:
+      permissions:
+        - "Overall/Administer:admin"
+        - "Overall/Read:authenticated"
+
+  jenkins:
+    location:
+      url: "http://${JENKINS_URL}:8080"
+
+  clouds:
+    - kubernetes:
+        name: "eks-build-my-app"
+        serverUrl: "${eks_cluster_endpoint}"
+        namespace: "jenkins"
+        jenkinsUrl: "http://${JENKINS_URL}:8080"
+        containerCapStr: "10"
+        templates:
+          - name: "build-agent"
+            label: "build-agent"
+            nodeSelector: "role=build-node"
+            serviceAccount: "jenkins-agent"
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: jenkins-agent
+                namespace: jenkins
+              spec:
+                serviceAccountName: jenkins-agent
+                tolerations:
+                - key: "dedicated"
+                  operator: "Equal"
+                  value: "build"
+                  effect: "NoSchedule"
+                containers:
+                - name: git
+                  image: alpine/git
+                  command: ['cat']; tty: true
+                - name: gitleaks
+                  image: zricethezav/gitleaks:latest
+                  command: ['cat']; tty: true
+                - name: sonar
+                  image: sonarsource/sonar-scanner-cli:latest
+                  command: ['cat']; tty: true
+                - name: kaniko
+                  image: gcr.io/kaniko-project/executor:debug
+                  command: ['/busybox/cat']; tty: true
+                - name: trivy
+                  image: aquasec/trivy:latest
+                  command: ['cat']; tty: true
+
+unclassified:
+  sonarGlobalConfiguration:
+    installations:
+      - name: "sonarqube-server"
+        serverUrl: "http://sonarqube.sonarqube-namespace.svc.cluster.local:9000"
+        credentialsId: "sonar-token"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-creds"
+              username: "${GITHUB_USERNAME}"
+              password: "${GITHUB_TOKEN}"
+          - string:
+              scope: GLOBAL
+              id: "sonar-token"
+              secret: "${SONAR_TOKEN}"

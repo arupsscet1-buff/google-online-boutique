@@ -1,0 +1,6 @@
+configuration-as-code:1775.v810dc950b_514
+kubernetes:4256.v79ecb_c0d967d
+sonar:2.17.2
+git:5.2.2
+credentials-binding:657.v2b_19db_2b_2c_9b_
+workflow-aggregator:600.vb_57cdd26fdd7
