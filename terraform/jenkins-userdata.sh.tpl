@@ -50,21 +50,6 @@ SONAR_TOKEN=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secre
 JENKINS_ADMIN_PASSWORD=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/admin-password --query SecretString --output text)
 GITHUB_USERNAME=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/github-username --query SecretString --output text)
 
-# ------------------------------------------------------------------
-# Write env vars Jenkins/JCasC will read at startup.
-# /etc/sysconfig/jenkins is sourced by the jenkins systemd unit.
-# ------------------------------------------------------------------
-cat <<EOV >> /etc/sysconfig/jenkins
-CASC_JENKINS_CONFIG=/var/lib/jenkins/casc_configs/jenkins.yaml
-EKS_CLUSTER_ENDPOINT=$EKS_CLUSTER_ENDPOINT
-EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME
-AWS_REGION=$AWS_REGION
-GITHUB_TOKEN=$GITHUB_TOKEN
-GITHUB_USERNAME=$GITHUB_USERNAME
-SONAR_TOKEN=$SONAR_TOKEN
-JENKINS_ADMIN_PASSWORD=$JENKINS_ADMIN_PASSWORD
-EOV
-
 chmod 600 /etc/sysconfig/jenkins
 
 # ------------------------------------------------------------------

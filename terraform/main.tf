@@ -415,6 +415,19 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 # jenkins-userdata.sh.tpl pulls at boot, not secretsmanager:* on everything.
 # NOTE: create these four secrets in Secrets Manager before first boot
 # (aws secretsmanager create-secret --name jenkins/github-token ...).
+
+resource "aws_secretsmanager_secret" "sonar" {
+  name = "jenkins/sonar-token"
+}
+resource "aws_secretsmanager_secret" "github-username" {
+  name = "jenkins/github-username"
+}
+resource "aws_secretsmanager_secret" "github-token" {
+  name = "jenkins/github-token"
+}
+resource "aws_secretsmanager_secret" "admin-password" {
+  name = "jenkins/admin-password"
+}
 data "aws_caller_identity" "current" {}
 
 resource "aws_iam_role_policy" "jenkins_secrets" {
@@ -426,7 +439,7 @@ resource "aws_iam_role_policy" "jenkins_secrets" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
+        Action   = ["secretsmanager:GetSecretValue","secretsmanager:ListSecrets","secretsmanager:DescribeSecret"]
         Resource = [
           "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/github-token*",
           "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/github-username*",
