@@ -6,7 +6,10 @@ jenkins:
       allowsSignup: false
       users:
         - id: "admin"
-          password: "${JENKINS_ADMIN_PASSWORD}"   # from env var, never hardcoded
+          password: "$(aws secretsmanager get-secret-value \
+                      --secret-id jenkins/admin-password \
+                      --query SecretString \
+                      --output text)"
 
   authorizationStrategy:
     globalMatrix:
@@ -64,7 +67,7 @@ unclassified:
   sonarGlobalConfiguration:
     installations:
       - name: "sonarqube-server"
-        serverUrl: "http://sonarqube.sonarqube-namespace.svc.cluster.local:9000"
+        serverUrl: "http://sonarqube.sonarqube.svc.cluster.local:9000"
         credentialsId: "sonar-token"
 
 credentials:

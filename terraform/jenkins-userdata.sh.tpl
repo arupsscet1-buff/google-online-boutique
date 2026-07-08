@@ -43,16 +43,6 @@ cp /tmp/jenkins-config/jenkins.yaml /var/lib/jenkins/casc_configs/jenkins.yaml
 cp /tmp/jenkins-config/plugins.txt /var/lib/jenkins/plugins.txt
 
 # ------------------------------------------------------------------
-# Pull secrets from AWS Secrets Manager (role already has scoped access)
-# ------------------------------------------------------------------
-GITHUB_TOKEN=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/github-token --query SecretString --output text)
-SONAR_TOKEN=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/sonar-token --query SecretString --output text)
-JENKINS_ADMIN_PASSWORD=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/admin-password --query SecretString --output text)
-GITHUB_USERNAME=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id jenkins/github-username --query SecretString --output text)
-
-chmod 600 /etc/sysconfig/jenkins
-
-# ------------------------------------------------------------------
 # Install plugins, then start Jenkins
 # ------------------------------------------------------------------
 jenkins-plugin-cli --plugin-file /var/lib/jenkins/plugins.txt
