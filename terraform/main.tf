@@ -87,10 +87,17 @@ module "eks" {
       most_recent = true
       before_compute = true
     }
-    # CHANGE: required for aws_eks_pod_identity_association (Jenkins agent
-    # ECR access) to actually function inside the cluster.
     eks-pod-identity-agent = {
       most_recent = true
+    }
+    aws-ebs-csi-driver = {
+      most_recent = true
+      pod_identity_association = [
+        {
+          role_arn        = aws_iam_role.ebs_csi.arn
+          service_account = "ebs-csi-controller-sa"
+        }
+      ]
     }
   }
 
@@ -98,7 +105,7 @@ module "eks" {
   eks_managed_node_groups = {
     system-ng = {
       ami_type       = "AL2023_x86_64_STANDARD"
-      instance_types = ["t3.large"]
+      instance_types = ["m5.large"]
       subnet_ids     = module.vpc.private_subnets
 
       labels = {
@@ -169,6 +176,55 @@ resource "time_sleep" "wait_for_cluster_access" {
 }
 
 ################################################################################
+# EBS CSI Driver IAM Role + Pod Identity
+################################################################################
+resource "aws_iam_role" "ebs_csi" {
+  name = "ebs-csi-driver-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = ["sts:AssumeRole", "sts:TagSession"]
+        Effect = "Allow"
+        Principal = {
+          Service = "pods.eks.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "kubernetes_storage_class_v1" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "WaitForFirstConsumer"
+  allow_volume_expansion = true
+
+  parameters = {
+    type = "gp3"
+  }
+
+  depends_on = [
+    time_sleep.wait_for_cluster_access
+  ]
+}
+
+################################################################################
 # Deploy SonarQube via Helm (for code quality scanning)
 ################################################################################
 resource "random_password" "sonar_monitoring_passcode" {
@@ -184,16 +240,39 @@ resource "aws_secretsmanager_secret_version" "sonar" {
 resource "helm_release" "sonarqube" {
   name             = "sonarqube"
   repository       = "https://SonarSource.github.io/helm-chart-sonarqube"
+  version          = "~8"
   chart            = "sonarqube"
   namespace        = "sonarqube"
   create_namespace = true
-  set {
+
+  set_sensitive {
     name  = "monitoringPasscode"
     value = random_password.sonar_monitoring_passcode.result
   }
+
+  set {
+    name  = "postgresql.enabled"
+    value = "true"
+  }
+  set {
+    name  = "postgresql.image.repository"
+    value = "giosg/bitnami"
+  }
+  set {
+    name  = "postgresql.image.tag"
+    value = "postgresql-11.14.0-debian-10-r22"
+  }
+  set {
+    name  = "image.repository"
+    value = "library/sonarqube"
+  }
+  set {
+    name  = "image.tag"
+    value = "8.9.9-community"
+  }
   set {
     name  = "community.enabled"
-    value = true
+    value = "true"
   }
 
   depends_on = [
@@ -264,11 +343,6 @@ resource "aws_eks_access_policy_association" "jenkins_deploy" {
 # Jenkins Agent — IAM role + Pod Identity (NEW)
 # Scoped ECR push access for the ephemeral Jenkins agent pod only — not the
 # controller, and not every pod on build-ng.
-#
-# PREREQUISITE (outside Terraform): the "jenkins" namespace and a
-# "jenkins-agent" ServiceAccount must exist in the cluster (created via
-# kubectl/Helm, or your Jenkins Kubernetes plugin pod template config)
-# before this association takes effect.
 ################################################################################
 resource "aws_iam_role" "jenkins_agent" {
   name = "jenkins-agent-role"
@@ -437,18 +511,24 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 resource "aws_secretsmanager_secret" "sonar" {
   name = "jenkins/sonar/token"
   recovery_window_in_days = 0
+  tags = {
+    "jenkins:credentials:type" = "string"
+  }
 }
-resource "aws_secretsmanager_secret" "github-username" {
-  name = "jenkins/github-username"
+resource "aws_secretsmanager_secret" "github_creds" {
+  name                    = "jenkins/github-creds"
   recovery_window_in_days = 0
-}
-resource "aws_secretsmanager_secret" "github-token" {
-  name = "jenkins/github/token"
-  recovery_window_in_days = 0
+  tags = {
+    "jenkins:credentials:type"     = "usernamePassword"
+    "jenkins:credentials:username" = "arupsscet1-buff"
+  }
 }
 resource "aws_secretsmanager_secret" "admin-password" {
   name = "jenkins/admin-password"
   recovery_window_in_days = 0
+  tags = {
+    "jenkins:credentials:type" = "string"
+  }
 }
 data "aws_caller_identity" "current" {}
 
@@ -473,19 +553,27 @@ resource "aws_iam_role_policy" "jenkins_secrets" {
   role = aws_iam_role.jenkins.id
 
   policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue","secretsmanager:ListSecrets","secretsmanager:DescribeSecret"]
-        Resource = [
-          "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/github-token*",
-          "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/github-username*",
-          "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/sonar-token*",
-          "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/admin-password*",
-        ]
-      }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets",
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      Resource = [
+        "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:jenkins/*",
+      ]
+    }
+  ]
   })
 }
 
@@ -660,6 +748,7 @@ module "jenkins_alb" {
   name    = "jenkins-alb"
   vpc_id  = module.vpc.vpc_id
   subnets = module.vpc.public_subnets
+  enable_deletion_protection = false 
 
   security_group_ingress_rules = {
     jenkins_http = {

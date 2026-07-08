@@ -1,7 +1,7 @@
-configuration-as-code:1775.v810dc950b_514
-kubernetes:4256.v79ecb_c0d967d
+configuration-as-code:2077.v41f1011a_5110
+kubernetes:4423.vb_59f230b_ce53
 sonar:2.17.2
 git:5.2.2
-credentials-binding:657.v2b_19db_2b_2c_9b_
+credentials-binding:702.vfe613e537e88
 workflow-aggregator:600.vb_57cdd26fdd7
 aws-secrets-manager-credentials-provider:2.222.v376939a_9ffb_b
