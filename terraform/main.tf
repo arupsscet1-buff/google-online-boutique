@@ -74,6 +74,16 @@ module "eks" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
+  security_group_additional_rules = {
+    jenkins_https = {
+      description              = "Allow Jenkins EC2 to access EKS API"
+      protocol                 = "tcp"
+      from_port                = 443
+      to_port                  = 443
+      type                     = "ingress"
+      source_security_group_id = aws_security_group.jenkins-sg.id
+    }
+  }
 
   # Cluster Addons
   addons = {
@@ -240,7 +250,7 @@ resource "aws_secretsmanager_secret_version" "sonar" {
 resource "helm_release" "sonarqube" {
   name             = "sonarqube"
   repository       = "https://SonarSource.github.io/helm-chart-sonarqube"
-  version          = "~8"
+  version          = "2026.3.1"
   chart            = "sonarqube"
   namespace        = "sonarqube"
   create_namespace = true
@@ -249,11 +259,12 @@ resource "helm_release" "sonarqube" {
     name  = "monitoringPasscode"
     value = random_password.sonar_monitoring_passcode.result
   }
-
+/*
   set {
     name  = "postgresql.enabled"
-    value = "true"
+    value = "false"
   }
+
   set {
     name  = "postgresql.image.repository"
     value = "giosg/bitnami"
@@ -262,14 +273,16 @@ resource "helm_release" "sonarqube" {
     name  = "postgresql.image.tag"
     value = "postgresql-11.14.0-debian-10-r22"
   }
+
   set {
     name  = "image.repository"
     value = "library/sonarqube"
   }
   set {
     name  = "image.tag"
-    value = "8.9.9-community"
+    value = "2026.3.0-community"
   }
+  */
   set {
     name  = "community.enabled"
     value = "true"
@@ -501,6 +514,7 @@ resource "aws_instance" "jenkins-controller" {
     eks_cluster_endpoint = module.eks.cluster_endpoint
     eks_cluster_name     = module.eks.cluster_name
     aws_region           = local.region
+    eks_ca_cert          = module.eks.cluster_certificate_authority_data
     jenkins_config_repo  = local.jenkins_config_repo
     jenkins_url          = aws_eip.jenkins.public_ip
   }))
@@ -862,4 +876,59 @@ module "jenkins_alb" {
   }
 
   tags = local.tags
+}
+
+resource "random_password" "sonar_admin_password" {
+  length  = 24
+  special = false
+}
+
+resource "null_resource" "sonar_admin_rotate" {
+  triggers = {
+    password_hash = sha256(random_password.sonar_admin_password.result)
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      curl -s -u admin:admin \
+        -X POST "${kubernetes_ingress_v1.sonar.status[0].load_balancer[0].ingress[0].hostname}:9000/api/users/change_password" \
+        -d "login=admin" \
+        -d "previousPassword=admin" \
+        -d "password=${random_password.sonar_admin_password.result}"
+    EOT
+  }
+
+  depends_on = [
+    helm_release.sonarqube,
+    kubernetes_ingress_v1.sonar,
+    kubernetes_namespace.jenkins
+  ]
+}
+
+resource "null_resource" "sonar_webhook" {
+  triggers = {
+    jenkins_url = aws_eip.jenkins.public_ip
+  }
+
+  depends_on = [
+    helm_release.sonarqube,
+    kubernetes_ingress_v1.sonar,
+    aws_eip_association.jenkins,
+    null_resource.sonar_admin_rotate
+  ]
+}
+
+resource "aws_secretsmanager_secret" "sonar-admin-password" {
+  name = "jenkins/sonar-admin-password"
+  recovery_window_in_days = 0
+  tags = {
+    "jenkins:credentials:type" = "string"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "sonar-admin-password" {
+  secret_id     = aws_secretsmanager_secret.sonar-admin-password.id
+  secret_string = random_password.sonar_admin_password.result
+
+  depends_on = [null_resource.sonar_admin_rotate]
 }

@@ -1,7 +1,8 @@
 pipeline {
     agent {
         kubernetes {
-            label 'build-agent'
+            cloud 'eks-build-my-app'
+            inheritFrom 'build-agent'
         }
     }
 
@@ -36,10 +37,18 @@ pipeline {
                     withSonarQubeEnv('sonarqube-server') {
                         sh '''
                             sonar-scanner \
-                              -Dsonar.projectKey=my-app \
-                              -Dsonar.sources=.
+                            -Dsonar.projectKey=my-app-${SERVICE} \
+                            -Dsonar.sources=.
                         '''
                     }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -49,13 +58,13 @@ pipeline {
                 container('kaniko') {
                     script {
                         def services = sh(
-                            script: "find . -maxdepth 3 -name Dockerfile -exec dirname {} \\;",
+                            script: "find ./src -maxdepth 3 -name Dockerfile -exec dirname {} \\;",
                             returnStdout: true
                         ).trim().split("\n")
 
                         services.each { svcPath ->
-                            def relPath = svcPath.replaceFirst('^\\./', '')      // cartservice/src or frontend
-                            def svcName = relPath.tokenize('/')[0]                // cartservice or frontend — first segment only
+                            def relPath = svcPath.replaceFirst('^\\./src/', '')  // strip "./src/" prefix now, not "./"
+                            def svcName = relPath.tokenize('/')[0]                 // first segment only
 
                             sh """
                                 /kaniko/executor \
@@ -74,19 +83,6 @@ pipeline {
             steps {
                 container('trivy') {
                     sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
-                }
-            }
-        }
-
-        stage('Deploy (Helm)') {
-            steps {
-                container('helm') {
-                    sh """
-                        helm upgrade --install my-app ./charts/my-app \
-                          --namespace apps \
-                          --set image.repository=${ECR_REGISTRY}/${ECR_REPO} \
-                          --set image.tag=${IMAGE_TAG}
-                    """
                 }
             }
         }

@@ -5,7 +5,7 @@ set -e
 # Values injected by Terraform via templatefile() — do not hardcode.
 # ------------------------------------------------------------------
 EKS_CLUSTER_ENDPOINT="${eks_cluster_endpoint}"
-EKS_CA_CERT="${eks_ca_cert}"
+KUBERNETES_CA_CERTIFICATE="${eks_ca_cert}"
 EKS_CLUSTER_NAME="${eks_cluster_name}"
 AWS_REGION="${aws_region}"
 JENKINS_CONFIG_REPO="${jenkins_config_repo}"
@@ -62,6 +62,7 @@ cat <<EOF | sudo tee /etc/systemd/system/jenkins.service.d/override.conf
 [Service]
 Environment="EKS_CLUSTER_ENDPOINT=$EKS_CLUSTER_ENDPOINT"
 Environment="JENKINS_URL=$JENKINS_URL"
+Environment="KUBERNETES_CA_CERTIFICATE=$KUBERNETES_CA_CERTIFICATE"
 Environment="CASC_JENKINS_CONFIG=/var/lib/jenkins/casc_configs/jenkins.yaml"
 EOF
 sudo systemctl daemon-reload

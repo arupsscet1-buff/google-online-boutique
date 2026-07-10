@@ -1,18 +1,19 @@
 jenkins:
   systemMessage: "Managed by JCasC — do not edit via UI, changes will be overwritten"
+
   securityRealm:
     local:
       allowsSignup: false
       users:
         - id: "admin"
           password: "${jenkins/admin-password}"
+
   authorizationStrategy:
     globalMatrix:
       permissions:
         - "Overall/Administer:admin"
         - "Overall/Read:authenticated"
-  location:
-    url: "http://${JENKINS_URL}:8080"
+
   clouds:
     - kubernetes:
         name: "eks-build-my-app"
@@ -20,13 +21,17 @@ jenkins:
         namespace: "jenkins"
         credentialsId: "jenkins/k8s-token"
         serverCertificate: "${EKS_CA_CERT}"
-        jenkinsUrl: "http://${JENKINS_URL}:8080"
+        jenkinsUrl: "${JENKINS_URL}"
         containerCapStr: "10"
         templates:
           - name: "build-agent"
             label: "build-agent"
+            agentContainer: "jnlp"
+            agentInjection: false
+            webSocket: true
+            namespace: "jenkins"
             nodeSelector: "role=build-node"
-            serviceAccount: "jenkins-agent"
+            serviceAccount: "jenkins-controller"
             yaml: |
               apiVersion: v1
               kind: Pod
@@ -34,13 +39,15 @@ jenkins:
                 name: jenkins-agent
                 namespace: jenkins
               spec:
-                serviceAccountName: jenkins-agent
+                serviceAccountName: jenkins-controller
                 tolerations:
                 - key: "dedicated"
                   operator: "Equal"
                   value: "build"
                   effect: "NoSchedule"
                 containers:
+                - name: jnlp
+                  image: jenkins/inbound-agent:latest-jdk21
                 - name: git
                   image: alpine/git
                   command: ["cat"]
@@ -67,8 +74,11 @@ jenkins:
                   tty: true
 
 unclassified:
+  jenkinsLocationConfiguration:
+    url: "http://${JENKINS_URL}:8080"
+
   sonarGlobalConfiguration:
     installations:
       - name: "sonarqube-server"
         serverUrl: "http://sonarqube.sonarqube.svc.cluster.local:9000"
-        credentialsId: "sonar-token"
+        credentialsId: "jenkins/sonar/token"
