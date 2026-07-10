@@ -14,6 +14,10 @@ output "cluster_endpoint" {
   value = module.eks.cluster_endpoint
 }
 
+output "cluster_ca_cert" {
+  value = module.eks.cluster_certificate_authority_data
+}
+
 output "configure_kubectl" {
   value = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"
 }

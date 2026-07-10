@@ -1,4 +1,4 @@
-FROM node:24-alpine AS builder
+FROM node:22-bookworm AS builder
 
 WORKDIR /usr/src/app
 
@@ -8,7 +8,7 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-FROM gcr.io/distroless/nodejs24-debian12
+FROM gcr.io/distroless/nodejs22-debian12
 
 WORKDIR /usr/src/app
 

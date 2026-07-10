@@ -1,31 +1,25 @@
 jenkins:
   systemMessage: "Managed by JCasC — do not edit via UI, changes will be overwritten"
-
   securityRealm:
     local:
       allowsSignup: false
       users:
         - id: "admin"
-          password: "$(aws secretsmanager get-secret-value \
-                      --secret-id jenkins/admin-password \
-                      --query SecretString \
-                      --output text)"
-
+          password: "${jenkins/admin-password}"
   authorizationStrategy:
     globalMatrix:
       permissions:
         - "Overall/Administer:admin"
         - "Overall/Read:authenticated"
-
-  jenkins:
-    location:
-      url: "http://${JENKINS_URL}:8080"
-
+  location:
+    url: "http://${JENKINS_URL}:8080"
   clouds:
     - kubernetes:
         name: "eks-build-my-app"
-        serverUrl: "${eks_cluster_endpoint}"
+        serverUrl: "${EKS_CLUSTER_ENDPOINT}"
         namespace: "jenkins"
+        credentialsId: "jenkins/k8s-token"
+        serverCertificate: "${EKS_CA_CERT}"
         jenkinsUrl: "http://${JENKINS_URL}:8080"
         containerCapStr: "10"
         templates:
@@ -49,19 +43,28 @@ jenkins:
                 containers:
                 - name: git
                   image: alpine/git
-                  command: ['cat']; tty: true
+                  command: ["cat"]
+                  tty: true
                 - name: gitleaks
                   image: zricethezav/gitleaks:latest
-                  command: ['cat']; tty: true
+                  command: ["cat"]
+                  tty: true
                 - name: sonar
                   image: sonarsource/sonar-scanner-cli:latest
-                  command: ['cat']; tty: true
+                  command: ["cat"]
+                  tty: true
                 - name: kaniko
                   image: gcr.io/kaniko-project/executor:debug
-                  command: ['/busybox/cat']; tty: true
+                  command: ["/busybox/cat"]
+                  tty: true
                 - name: trivy
                   image: aquasec/trivy:latest
-                  command: ['cat']; tty: true
+                  command: ["cat"]
+                  tty: true
+                - name: helm
+                  image: alpine/helm:3.14.0
+                  command: ["cat"]
+                  tty: true
 
 unclassified:
   sonarGlobalConfiguration:
@@ -69,17 +72,3 @@ unclassified:
       - name: "sonarqube-server"
         serverUrl: "http://sonarqube.sonarqube.svc.cluster.local:9000"
         credentialsId: "sonar-token"
-
-credentials:
-  system:
-    domainCredentials:
-      - credentials:
-          - usernamePassword:
-              scope: GLOBAL
-              id: "github-creds"
-              username: "${GITHUB_USERNAME}"
-              password: "${GITHUB_TOKEN}"
-          - string:
-              scope: GLOBAL
-              id: "sonar-token"
-              secret: "${SONAR_TOKEN}"

@@ -8,7 +8,7 @@ locals {
 
   # Namespaces Jenkins is allowed to deploy into via Helm (CD stage).
   # Add/remove as your app namespaces are created.
-  jenkins_deploy_namespaces = ["default", "apps"]
+  jenkins_deploy_namespaces = ["default", "apps", "jenkins", "sonarqube"]
 
   # Git repo holding jenkins.yaml (JCasC) + plugins.txt — cloned by user_data at boot.
   jenkins_config_repo = "https://github.com/arupsscet1-buff/google-online-boutique.git"
@@ -282,7 +282,7 @@ resource "helm_release" "sonarqube" {
 }
 
 ################################################################################
-# Namespace + ServiceAccount for Jenkins Agent Pod Identity
+# Namespace for Jenkins Agent
 ################################################################################
 
 resource "kubernetes_namespace" "jenkins" {
@@ -292,12 +292,86 @@ resource "kubernetes_namespace" "jenkins" {
   depends_on = [time_sleep.wait_for_cluster_access]
 }
 
-resource "kubernetes_service_account" "jenkins-agent" {
+################################################################################
+# ServiceAccount + long-lived token + RBAC for the Jenkins Kubernetes plugin
+# (controller-side auth to EKS API — separate from jenkins-agent, which is
+# the identity *inside* build pods via Pod Identity).
+################################################################################
+
+resource "kubernetes_service_account" "jenkins-controller" {
   metadata {
-    name = "jenkins-agent"
+    name      = "jenkins-controller"
     namespace = "jenkins"
   }
-  depends_on = [ kubernetes_namespace.jenkins ]
+  depends_on = [kubernetes_namespace.jenkins]
+}
+
+# Legacy-style long-lived token Secret — NOT the TokenRequest API used by
+# `kubectl create token`, which expires after 1 hour. This binds via the
+# `kubernetes.io/service-account.name` annotation and never expires, which
+# is what the Jenkins Kubernetes plugin needs for a stable, unattended
+# credential (no refresh logic in the plugin).
+resource "kubernetes_secret" "jenkins-controller-token" {
+  metadata {
+    name      = "jenkins-controller-token"
+    namespace = "jenkins"
+    annotations = {
+      "kubernetes.io/service-account.name" = kubernetes_service_account.jenkins-controller.metadata[0].name
+    }
+  }
+  type = "kubernetes.io/service-account-token"
+
+  depends_on = [kubernetes_service_account.jenkins-controller]
+}
+
+resource "kubernetes_role" "jenkins-agent-manager" {
+  metadata {
+    name      = "jenkins-agent-manager"
+    namespace = "jenkins"
+  }
+  rule {
+    api_groups = [""]
+    resources  = ["pods", "pods/exec", "pods/log"]
+    verbs      = ["get", "list", "watch", "create", "delete", "update"]
+  }
+  rule {
+    api_groups = [""]
+    resources  = ["events"]
+    verbs      = ["get", "list", "watch"]
+  }
+}
+
+resource "kubernetes_role_binding" "jenkins-agent-manager" {
+  metadata {
+    name      = "jenkins-agent-manager-binding"
+    namespace = "jenkins"
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.jenkins-agent-manager.metadata[0].name
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.jenkins-controller.metadata[0].name
+    namespace = "jenkins"
+  }
+}
+
+# Push the token into Secrets Manager so it flows through the same
+# tag-driven Credentials Provider pattern as your other JCasC credentials —
+# no separate manual step, no hardcoding in jenkins.yaml.
+resource "aws_secretsmanager_secret" "k8s-controller-token" {
+  name = "jenkins/k8s-token"
+  recovery_window_in_days = 0
+  tags = {
+    "jenkins:credentials:type" = "string"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "k8s-controller-token" {
+  secret_id     = aws_secretsmanager_secret.k8s-controller-token.id
+  secret_string = kubernetes_secret.jenkins-controller-token.data["token"]
 }
 
 ################################################################################
@@ -305,7 +379,7 @@ resource "kubernetes_service_account" "jenkins-agent" {
 # CHANGE: added. Referenced by the CI pipeline (docker/Kaniko push) and the
 # CD pipeline (helm push/pull chart).
 ################################################################################
-resource "aws_ecr_repository" "app" {
+resource "aws_ecr_repository" "my-app" {
   name                 = "my-app"
   image_tag_mutability = "IMMUTABLE"
 

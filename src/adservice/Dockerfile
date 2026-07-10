@@ -1,4 +1,4 @@
-FROM openjdk:27-ea-28-jdk-trixie AS builder
+FROM eclipse-temurin:21-jdk AS builder
 WORKDIR /app
 
 COPY ["build.gradle", "gradlew", "./"]
@@ -10,7 +10,7 @@ COPY . .
 RUN chmod +x gradlew
 RUN ./gradlew installDist
 
-FROM gcr.io/distroless/java-debian12
+FROM gcr.io/distroless/java21-debian12:nonroot
 WORKDIR /app
 COPY --from=builder /app .
 

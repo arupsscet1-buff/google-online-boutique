@@ -1,0 +1,94 @@
+pipeline {
+    agent {
+        kubernetes {
+            label 'build-agent'
+        }
+    }
+
+    environment {
+        ECR_REGISTRY = "748624204530.dkr.ecr.ap-south-1.amazonaws.com"
+        ECR_REPO     = "my-app"
+        IMAGE_TAG    = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                container('git') {
+                    git branch: 'main',
+                        url: 'https://github.com/arupsscet1-buff/google-online-boutique.git',
+                        credentialsId: 'github-creds'
+                }
+            }
+        }
+
+        stage('Secret Scan') {
+            steps {
+                container('gitleaks') {
+                    sh 'gitleaks detect --source . --no-git -v --exit-code 1'
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                container('sonar') {
+                    withSonarQubeEnv('sonarqube-server') {
+                        sh '''
+                            sonar-scanner \
+                              -Dsonar.projectKey=my-app \
+                              -Dsonar.sources=.
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push All Services') {
+            steps {
+                container('kaniko') {
+                    script {
+                        def services = sh(
+                            script: "find . -maxdepth 3 -name Dockerfile -exec dirname {} \\;",
+                            returnStdout: true
+                        ).trim().split("\n")
+
+                        services.each { svcPath ->
+                            def relPath = svcPath.replaceFirst('^\\./', '')      // cartservice/src or frontend
+                            def svcName = relPath.tokenize('/')[0]                // cartservice or frontend — first segment only
+
+                            sh """
+                                /kaniko/executor \
+                                --context=`pwd`/${svcPath} \
+                                --dockerfile=${svcPath}/Dockerfile \
+                                --destination=${ECR_REGISTRY}/${ECR_REPO}-${svcName}:${IMAGE_TAG} \
+                                --cache=true
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Image Scan (Trivy)') {
+            steps {
+                container('trivy') {
+                    sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy (Helm)') {
+            steps {
+                container('helm') {
+                    sh """
+                        helm upgrade --install my-app ./charts/my-app \
+                          --namespace apps \
+                          --set image.repository=${ECR_REGISTRY}/${ECR_REPO} \
+                          --set image.tag=${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+}
