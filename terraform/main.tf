@@ -890,7 +890,7 @@ resource "null_resource" "sonar_admin_rotate" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      curl -s -u admin:admin \
+      curl -s -u admin:random_password.sonar_admin_password.result \
         -X POST "${kubernetes_ingress_v1.sonar.status[0].load_balancer[0].ingress[0].hostname}:9000/api/users/change_password" \
         -d "login=admin" \
         -d "previousPassword=admin" \
