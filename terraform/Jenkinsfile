@@ -8,7 +8,7 @@ pipeline {
 
     environment {
         ECR_REGISTRY = "748624204530.dkr.ecr.ap-south-1.amazonaws.com"
-        ECR_REPO     = "my-app"
+        ECR_REPO     = "my-app/frontend"
         IMAGE_TAG    = "${env.BUILD_NUMBER}"
     }
 
@@ -111,11 +111,21 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 container('helm') {
-                    sh """
-                    image_path=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                    echo "Deploying image: $image_path to EKS"
-                    kubectl apply -f kubernetes_manifests/frontend.yaml
-                    """
+                    sh '''
+                    # 1. Assemble the clean ECR image URI path string
+                    IMAGE_PATH="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                    echo "Deploying image: ${IMAGE_PATH} to EKS"
+
+                    # 2. Update the image reference inside your manifest file on the fly
+                    # (Assumes your frontend.yaml file contains an 'image:' field)
+                    sed -i "s|image:.*|image: ${IMAGE_PATH}|g" kubernetes_manifests/frontend.yaml
+
+                    #3. Apply the modified configuration file to your cluster
+                    kubectl apply -f kubernetes_manifests/frontend.yaml -n my-app
+
+                    # 4. Wait safely for the rollout execution to finish
+                    kubectl rollout status deployment/frontend -n my-app
+                    '''
                 }
             }
         }

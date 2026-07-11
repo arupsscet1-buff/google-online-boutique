@@ -399,9 +399,10 @@ resource "aws_secretsmanager_secret_version" "k8s-controller-token" {
 # CHANGE: added. Referenced by the CI pipeline (docker/Kaniko push) and the
 # CD pipeline (helm push/pull chart).
 ################################################################################
-resource "aws_ecr_repository" "my-app" {
-  name                 = "my-app"
+resource "aws_ecr_repository" "my_app_frontend" {
+  name                 = "my-app/frontend"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         =  true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -482,8 +483,6 @@ resource "aws_eks_pod_identity_association" "jenkins-agent" {
   depends_on = [module.eks, time_sleep.wait_for_cluster_access, kubernetes_service_account.jenkins-agent]
 }
 
-
-
 resource "kubernetes_role" "jenkins_deployer" {
   metadata {
     name      = "jenkins-deployer-role"
@@ -507,6 +506,38 @@ resource "kubernetes_role_binding" "jenkins_deployer_bind" {
     api_group = "rbac.authorization.k8s.io"
     kind      = "Role"
     name      = kubernetes_role.jenkins_deployer.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "ecr-push-sa"
+    namespace = "jenkins"
+  }
+}
+
+resource "kubernetes_role" "app_deployer" {
+  metadata {
+    name      = "app-deployer-role"
+    namespace = "my-app"
+  }
+
+  rule {
+    api_groups = ["apps", "extensions"]
+    resources  = ["deployments","services","serviceaccounts"]
+    verbs      = ["create", "get", "patch", "update", "list", "watch"]
+  }
+}
+
+resource "kubernetes_role_binding" "app_deployer_bind" {
+  metadata {
+    name      = "app-deployer-binding"
+    namespace = "my-app"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.app_deployer.metadata[0].name
   }
 
   subject {
