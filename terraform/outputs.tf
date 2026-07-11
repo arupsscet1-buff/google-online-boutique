@@ -52,7 +52,7 @@ output "sonar_url" {
 output "frontend_url" {
   description = "Full URL to access the app frontend"
   value       = try(
-    "http://${kubernetes_ingress_v1.frontend.status[0].load_balancer[0].ingress[0].hostname}:8081",
+    "http://${kubernetes_ingress_v1.frontend.status[0].load_balancer[0].ingress[0].hostname}:80",
     "Not yet provisioned — check again after a minute or two"
   )
 }

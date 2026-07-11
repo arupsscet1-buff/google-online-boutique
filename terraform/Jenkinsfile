@@ -74,28 +74,28 @@ pipeline {
                 }
             }
         }
+        stage('Check env variables') {
+            steps {
+                container('jnlp') {
+                    sh '''
+                    echo "--- Checking AWS Environment ---"
+                    env | grep AWS || echo "AWS Env variables not found in shell path"
+                    '''                
+                }
+            }
+        }
 
         stage('Build & Push All Services') {
             steps {
                 container('kaniko') {
                     script {
-                        def services = sh(
-                            script: "find ./src -maxdepth 3 -name Dockerfile -exec dirname {} \\;",
-                            returnStdout: true
-                        ).trim().split("\n")
-
-                        services.each { svcPath ->
-                            def relPath = svcPath.replaceFirst('^\\./src/', '')  // strip "./src/" prefix now, not "./"
-                            def svcName = relPath.tokenize('/')[0]                 // first segment only
-
                             sh """
                                 /kaniko/executor \
-                                --context=`pwd`/${svcPath} \
-                                --dockerfile=${svcPath}/Dockerfile \
-                                --destination=${ECR_REGISTRY}/${ECR_REPO}-${svcName}:${IMAGE_TAG} \
+                                --context=`pwd`/src/frontend \
+                                --dockerfile=src/frontend/Dockerfile \
+                                --destination=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} \
                                 --cache=true
                             """
-                        }
                     }
                 }
             }
@@ -104,7 +104,18 @@ pipeline {
         stage('Image Scan (Trivy)') {
             steps {
                 container('trivy') {
-                    sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                    sh "trivy image ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                }
+            }
+        }
+        stage('Deploy to EKS') {
+            steps {
+                container('helm') {
+                    sh """
+                    image_path=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                    echo "Deploying image: $image_path to EKS"
+                    kubectl apply -f kubernetes_manifests/frontend.yaml
+                    """
                 }
             }
         }

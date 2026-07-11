@@ -126,12 +126,13 @@ module "eks" {
         AmazonEKSWorkerNodePolicy          = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
         AmazonEKS_CNI_Policy               = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
         AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        AmazonEC2ContainerRegistryPullOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
         AmazonSSMManagedInstanceCore       = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
       }
 
-      min_size     = 2
+      min_size     = 1
       max_size     = 2
-      desired_size = 2
+      desired_size = 1
 
       tags = merge(
         local.tags,
@@ -160,7 +161,7 @@ module "eks" {
       iam_role_additional_policies = {
         AmazonEKSWorkerNodePolicy          = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
         AmazonEKS_CNI_Policy               = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-        AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        AmazonEC2ContainerRegistryPowerUser = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
         AmazonSSMManagedInstanceCore       = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
       }
 
@@ -305,6 +306,12 @@ resource "kubernetes_namespace" "jenkins" {
   depends_on = [time_sleep.wait_for_cluster_access]
 }
 
+resource "kubernetes_namespace" "my-app" {
+  metadata {
+    name = "my-app"
+  }
+  depends_on = [time_sleep.wait_for_cluster_access]
+}
 ################################################################################
 # ServiceAccount + long-lived token + RBAC for the Jenkins Kubernetes plugin
 # (controller-side auth to EKS API — separate from jenkins-agent, which is
@@ -431,38 +438,87 @@ resource "aws_eks_access_policy_association" "jenkins_deploy" {
 # Scoped ECR push access for the ephemeral Jenkins agent pod only — not the
 # controller, and not every pod on build-ng.
 ################################################################################
-resource "aws_iam_role" "jenkins_agent" {
+resource "aws_iam_role" "jenkins-agent" {
   name = "jenkins-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = ["sts:AssumeRole", "sts:TagSession"]
+        Sid    = "AllowEksPodIdentity"
         Effect = "Allow"
         Principal = {
           Service = "pods.eks.amazonaws.com"
         }
+        Action = [
+          "sts:AssumeRole",
+          "sts:TagSession"
+        ]
       }
     ]
   })
-
-  tags = local.tags
 }
 
-resource "aws_iam_role_policy_attachment" "agent_ecr_push" {
-  role       = aws_iam_role.jenkins_agent.name
+# 1. Attach the standard AWS-Managed ECR Policy
+resource "aws_iam_role_policy_attachment" "jenkins-agent-ecr" {
+  role       = aws_iam_role.jenkins-agent.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-resource "aws_eks_pod_identity_association" "jenkins_agent" {
+resource "kubernetes_service_account" "jenkins-agent" {
+  metadata {
+    name      = "ecr-push-sa"
+    namespace = "jenkins"
+  }
+  depends_on = [kubernetes_namespace.jenkins]
+}
+
+resource "aws_eks_pod_identity_association" "jenkins-agent" {
   cluster_name    = module.eks.cluster_name
   namespace       = "jenkins"
-  service_account = "jenkins-agent"
-  role_arn        = aws_iam_role.jenkins_agent.arn
+  service_account = kubernetes_service_account.jenkins-agent.metadata[0].name
+  role_arn        = aws_iam_role.jenkins-agent.arn
 
-  depends_on = [module.eks]
+  depends_on = [module.eks, time_sleep.wait_for_cluster_access, kubernetes_service_account.jenkins-agent]
 }
+
+
+
+resource "kubernetes_role" "jenkins_deployer" {
+  metadata {
+    name      = "jenkins-deployer-role"
+    namespace = "jenkins"
+  }
+
+  rule {
+    api_groups = ["apps", "extensions"]
+    resources  = ["deployments"]
+    verbs      = ["create", "get", "patch", "update"]
+  }
+}
+
+resource "kubernetes_role_binding" "jenkins_deployer_bind" {
+  metadata {
+    name      = "jenkins-deployer-binding"
+    namespace = "jenkins"
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.jenkins_deployer.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "ecr-push-sa"
+    namespace = "jenkins"
+  }
+}
+
+
+
+
 
 ################################################################################
 # Jenkins Controller EC2
@@ -516,7 +572,8 @@ resource "aws_instance" "jenkins-controller" {
     aws_region           = local.region
     eks_ca_cert          = module.eks.cluster_certificate_authority_data
     jenkins_config_repo  = local.jenkins_config_repo
-    jenkins_url          = aws_eip.jenkins.public_ip
+    jenkins_url          = "http://${module.jenkins_alb.dns_name}:8080"
+    sonar_url            = "http://${kubernetes_ingress_v1.sonar.status[0].load_balancer[0].ingress[0].hostname}:9000"
   }))
 
   tags = {
@@ -778,7 +835,7 @@ resource "kubernetes_ingress_v1" "sonar" {
           path_type = "Prefix"
           backend {
             service {
-              name = "sonarqube-sonarqube"   # confirm actual service name via: kubectl get svc -n sonarqube
+              name = "sonarqube-sonarqube"
               port {
                 number = 9000
               }
@@ -795,12 +852,12 @@ resource "kubernetes_ingress_v1" "sonar" {
 resource "kubernetes_ingress_v1" "frontend" {
   metadata {
     name      = "frontend-ingress"
-    namespace = "default"   # confirm actual namespace for the online-boutique frontend
+    namespace = "my-app"   # confirm actual namespace for the online-boutique frontend
     annotations = {
       "kubernetes.io/ingress.class"            = "alb"
       "alb.ingress.kubernetes.io/scheme"       = "internet-facing"
       "alb.ingress.kubernetes.io/target-type"  = "ip"
-      "alb.ingress.kubernetes.io/listen-ports" = "[{\"HTTP\": 8081}]"
+      "alb.ingress.kubernetes.io/listen-ports" = "[{\"HTTP\": 8080}]"
       "alb.ingress.kubernetes.io/group.name"   = "my-app-alb"
     }
   }
@@ -877,3 +934,4 @@ module "jenkins_alb" {
 
   tags = local.tags
 }
+

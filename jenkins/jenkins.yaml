@@ -20,18 +20,18 @@ jenkins:
         serverUrl: "${EKS_CLUSTER_ENDPOINT}"
         namespace: "jenkins"
         credentialsId: "jenkins/k8s-token"
-        serverCertificate: "${EKS_CA_CERT}"
+        serverCertificate: "${KUBERNETES_CA_CERTIFICATE}"
         jenkinsUrl: "${JENKINS_URL}"
+        webSocket: true
         containerCapStr: "10"
         templates:
           - name: "build-agent"
             label: "build-agent"
             agentContainer: "jnlp"
             agentInjection: false
-            webSocket: true
             namespace: "jenkins"
             nodeSelector: "role=build-node"
-            serviceAccount: "jenkins-controller"
+            serviceAccount: "ecr-push-sa"
             yaml: |
               apiVersion: v1
               kind: Pod
@@ -39,7 +39,7 @@ jenkins:
                 name: jenkins-agent
                 namespace: jenkins
               spec:
-                serviceAccountName: jenkins-controller
+                serviceAccountName: ecr-push-sa
                 tolerations:
                 - key: "dedicated"
                   operator: "Equal"
@@ -74,11 +74,11 @@ jenkins:
                   tty: true
 
 unclassified:
-  jenkinsLocationConfiguration:
+  location:
     url: "http://${JENKINS_URL}:8080"
 
   sonarGlobalConfiguration:
     installations:
       - name: "sonarqube-server"
-        serverUrl: "http://sonarqube.sonarqube.svc.cluster.local:9000"
+        serverUrl: "${SONAR_URL}"
         credentialsId: "jenkins/sonar/token"

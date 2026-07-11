@@ -10,6 +10,7 @@ EKS_CLUSTER_NAME="${eks_cluster_name}"
 AWS_REGION="${aws_region}"
 JENKINS_CONFIG_REPO="${jenkins_config_repo}"
 JENKINS_URL="${jenkins_url}"
+SONAR_URL="${sonar_url}"
 
 sudo apt update -y
 sudo apt install fontconfig openjdk-21-jre -y
@@ -63,6 +64,7 @@ cat <<EOF | sudo tee /etc/systemd/system/jenkins.service.d/override.conf
 Environment="EKS_CLUSTER_ENDPOINT=$EKS_CLUSTER_ENDPOINT"
 Environment="JENKINS_URL=$JENKINS_URL"
 Environment="KUBERNETES_CA_CERTIFICATE=$KUBERNETES_CA_CERTIFICATE"
+Environment="SONAR_URL=$SONAR_URL"
 Environment="CASC_JENKINS_CONFIG=/var/lib/jenkins/casc_configs/jenkins.yaml"
 EOF
 sudo systemctl daemon-reload
